@@ -1,11 +1,6 @@
 # Physics & Control Model
 
-Here is what actually happens, once a second, inside `runner.py`.
-<img width="1920" height="995" alt="image" src="https://github.com/user-attachments/assets/bd0f1a2a-2633-44ce-bea4-25fe704d63b9" />
-
-<img width="1900" height="985" alt="image" src="https://github.com/user-attachments/assets/001cfee4-eab0-441e-8dda-1e9eab619562" />
-
-
+Here is what actually happens inside `runner.py`.
 
 ---
 
