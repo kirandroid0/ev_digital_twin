@@ -2,6 +2,15 @@
 
 Simulates an electric vehicle over a drive cycle — PID speed control, vehicle dynamics, battery/thermal model — and streams telemetry into PostgreSQL for live viewing in Grafana.
 
+PLEASE READ  - [`docs/PHYSICS.md`](docs/PHYSICS.md) !!!!!!!!
+
+
+<img width="1920" height="995" alt="image" src="https://github.com/user-attachments/assets/bd0f1a2a-2633-44ce-bea4-25fe704d63b9" />
+
+<img width="1900" height="985" alt="image" src="https://github.com/user-attachments/assets/001cfee4-eab0-441e-8dda-1e9eab619562" />
+
+
+
 ## How it works
 
 Each tick:
@@ -17,7 +26,6 @@ Each tick:
 PID controller → vehicle dynamics → battery/thermal model → PostgreSQL → Grafana
 ```
 
-Full equations in [`docs/PHYSICS.md`](docs/PHYSICS.md).
 
 ## Setup
 
@@ -27,7 +35,7 @@ cp .env.example .env   # fill in your DB credentials
 python runner.py
 ```
 
-Needs a running PostgreSQL instance with the database already created. The `telemetry` table is dropped and recreated on every run.
+Needs a running PostgreSQL instance with the database already created. The `telemetry` table is dropped and recreated every time.
 
 ## Config
 
