@@ -13,15 +13,6 @@ PLEASE READ  - [`docs/PHYSICS.md`](docs/PHYSICS.md) !!!!!!!!
 
 ## How it works
 
-Each tick:
-1. PID controller compares target speed to current speed, outputs throttle
-2. Throttle → motor torque → wheel force
-3. Subtract drag, rolling resistance, grade force
-4. Update speed, distance
-5. Compute motor efficiency, power draw
-6. Update battery SoC, voltage, current, temperature
-7. Write row to `telemetry`, repeat
-
 ```
 PID controller → vehicle dynamics → battery/thermal model → PostgreSQL → Grafana
 ```
