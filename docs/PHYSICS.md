@@ -1,68 +1,101 @@
 # Physics & Control Model
 
 Here is what actually happens, once a second, inside `runner.py`.
+<img width="1920" height="995" alt="image" src="https://github.com/user-attachments/assets/bd0f1a2a-2633-44ce-bea4-25fe704d63b9" />
 
-Not a summary. The real thing — every equation, in the order the code runs it, explained the way I'd explain it to you if we were sitting with the code open between us.
+<img width="1900" height="985" alt="image" src="https://github.com/user-attachments/assets/001cfee4-eab0-441e-8dda-1e9eab619562" />
+
+
 
 ---
 
-## 1. The controller: deciding how hard to push
+## 0. The drive cycle
 
-The simulation always knows two numbers — where the car should be, and where it is. Everything starts with the gap between them.
+Before any of the physics runs, here's `build_drive_cycle()` - lookup table of target speeds, one per tick, built once before the loop even starts:
+
+```
+t <  100   → target speed = 0    (stopped)
+t <  250   → target speed = 30   (accelerate, cruise)
+t <  400   → target speed = 50   (accelerate again)
+t <  500   → target speed = 0    (decelerate to a stop)
+t <  700   → target speed = 80   (hard acceleration)
+t <  850   → target speed = 40   (decelerate, settle)
+else       → target speed = 0    (stop)
+```
+
+Alongside it, `build_road_profile()` does the same thing for terrain, a separate lookup table saying what the road grade is at each second, independent of speed:
+
+```
+t <  200   → grade = 0.0°    (flat)
+t <  450   → grade = 4.5°    (climbing)
+t <  700   → grade = -2.0°   (descending)
+t <  850   → grade = 1.5°    (a smaller rise)
+else       → grade = 0.0°    (flat)
+```
+
+These two profiles are what turn the simulation from "a car that can move" into "a car doing something specific": a stop-start city segment, a climb, a fast stretch, a descent, a settle. Neither one reacts to the other or to anything the physics engine is doing. They're both just fixed scripts.
+The PID controller's whole job, every tick, is to chase whatever number `target_speed[t]` says it should be chasing.
+
+Limitation here: real drive cycles, WLTP, city-highway blends, anything based on actual recorded driving, ramp smoothly between speeds. This one jumps. Instantly, at the boundary of each segment, target speed steps from one value to another with no transition at all. That's a deliberate simplification for better PID results.
+
+---
+
+## 1. The controller
+
+The simulation always knows two numbers: where the car should be, and where it is. Everything starts with the gap between them.
 
 ```
 error(t) = target_speed(t) - speed(t)
 ```
 
-That gap alone isn't enough to act on well. This is the same closed-loop idea behind real cruise control, thermostats, drone stabilization — measure the gap, act, measure again. So the controller keeps three running impressions of that gap:
+This is the same closed-loop idea behind real cruise control, thermostats, drone stabilization: measure the gap, act, measure again. So the controller keeps these three questions running:
 
-**P — how big is the gap right now.**
+**P, how big is the gap right now.**
 
 ```
 P = Kp * error        (Kp = 2.0)
 ```
 
-Bigger gap, harder push. Reacts to the present, nothing else. On its own, this term has a problem: the car oscillates around the target forever, overshooting and undershooting, never quite settling. It needs the other two.
+Bigger gap, harder push. On its own, this term has a problem: the car oscillates around the target forever, overshooting and undershooting It needs the other two.
 
-**I — how long has this gap been sticking around.** The error, added up over time:
+**I, how long has this gap been sticking around.** The error, added up over time:
 
 ```
 integral(t) = clip( integral(t-1) + error(t) * dt,  -integral_max,  +integral_max )
 I = Ki * integral        (Ki = 0.02)
 ```
 
-This is what corrects the stubborn, lingering error a P-term alone can't close. But it has a failure mode worth naming: *integral windup*. If the car sits stopped for a long stretch — waiting at the start of a drive cycle, say — the integral just keeps accumulating in the background, quietly building up a debt. Then the moment the target speed finally moves, all that stored-up error slams through at once as a jerk of throttle nobody asked for. The `clip()` on `integral_max` exists specifically to stop that debt from growing past the point of usefulness.
+This is what corrects the stubborn, lingering error a P-term alone can't close. But it has a failure mode worth naming: *integral windup*. If the car sits stopped for a long stretch, waiting at the start of a drive cycle, say, the integral just keeps accumulating in the background, quietly building up a debt. Then the moment the target speed finally moves, all that stored-up error slams through at once as a jerk of throttle nobody asked for. The `clip()` on `integral_max` exists specifically to stop that debt from growing past the point of usefulness.
 
-**D — how fast the gap is changing.** Not where the error is — where it's headed:
+**D, how fast the gap is changing.** Not where the error is, where it's headed:
 
 ```
 derivative(t) = ( error(t) - error(t-1) ) / dt
 D = Kd * derivative        (Kd = 0.5)
 ```
 
-This is the anticipation term. If speed is closing in on the target fast, the derivative senses that and eases off before overshoot happens — a damper, smoothing out what would otherwise be an oscillation. Its one real weakness: it reacts to *noise*, not just signal. And this simulation deliberately injects small random noise into the RPM reading — so the derivative term is, in a small way, always slightly jumpy by design.
+If speed is closing in on the target fast, the derivative senses that and eases off before overshoot happens, a damper, smoothing out what would otherwise be an oscillation. 
 
 All three combine into one number:
 
 ```
 throttle(t) = clip( Kp*error(t) + Ki*integral(t) + Kd*derivative(t),  0,  100 )
 ```
+Without the clip, the math could hand back a negative throttle, or something past 100%, and neither of those mean anything.
 
-The clip at the end isn't optional — without it, the math could hand back a negative throttle, or something past 100%, and neither of those mean anything to a real motor.
-
-The gains themselves — 2.0, 0.02, 0.5 — weren't derived from a formula. They were found the way most PID gains are found in practice: tried, watched, adjusted. Push `Kp` up and the car responds faster but oscillates more. Push `Ki` up and steady-state error vanishes faster, at the cost of more windup risk. Push `Kd` up and the ride smooths out, but it gets twitchier around sensor noise. And all of it is quietly tied to `dt` — the derivative term divides by it directly, so changing the simulation's timestep without retuning the gains would change how the whole controller behaves, not just how often it updates.
+I took AI suggestions to choose gains. 
 
 ---
 
 ## 2. Throttle becomes motion
 
-Throttle is a percentage. A car doesn't move on percentages. So the first job is turning it into something physical.
+Throttle is a percentage. 
 
 ```
 motor_torque = max_torque * (throttle / 100)
 ```
 
-That torque passes through the gearbox — multiplied up, the way gears do:
+That torque passes through the gearbox, multiplied up, the way gears do:
 
 ```
 wheel_torque = motor_torque * gear_ratio
@@ -74,43 +107,41 @@ And torque at a wheel of a given radius becomes force at the point where rubber 
 motor_force = wheel_torque / wheel_radius
 ```
 
-This is the number the whole rest of the simulation has been waiting for. This is the push.
+Really important number here.
 
 ---
 
-## 3. Everything that pushes back
+## 3. Forces
 
-Nothing moves for free. Three forces resist the car, all at once, all the time.
 
-**Rolling resistance** — the small, constant tax of tyres deforming against the road:
+
+**Rolling resistance**, the small, constant tax of tyres deforming against the road:
 
 ```
 rolling_resistance = Crr * mass * g * cos(theta)
 ```
 
-**Drag** — air, refusing to get out of the way. This one grows with the *square* of speed, which is why it barely matters at 20 km/h and dominates everything at 150. Double the speed and you don't double the drag — you quadruple it. That's the whole reason highway driving eats range so much faster than city driving does; the resistance isn't scaling with you, it's outrunning you.
-
+**Drag**, air, refusing to get out of the way. 
 ```
 drag_force = 0.5 * air_density * Cd * frontal_area * (speed / 3.6)^2
 ```
 
-**Grade** — gravity, pulling the car back down whatever hill it's trying to climb:
+**Grade**, gravity, pulling the car back down whatever hill it's trying to climb:
 
 ```
 grade_force = mass * g * sin(theta)
 ```
 
-This one is small-sounding until you actually run the number. At a 4.5° incline — nothing dramatic, barely noticeable if you were walking it — `sin(4.5°) ≈ 0.078`. Multiply that through a 1500 kg car and it's adding roughly **1147 N** of resistance the motor has to fight, continuously, for as long as the climb lasts. That's not a rounding error. That's a real fraction of what the motor can put out at max torque.
+At 4.5° incline, the grade force is significant, not negligible.
 
-`theta` is the road's grade, converted from degrees into radians before it ever touches `sin()` or `cos()` — a small detail, easy to forget, and silently wrong if you do: numpy's trig functions assume radians, not degrees, and there's no warning if you feed them the wrong unit. The road itself isn't a single number, either — it's a profile that changes as the drive goes on: flat, then a 4.5° climb, then a 2.0° descent, then a smaller 1.5° rise, then flat again. A journey, not a straight line.
+Using `sin(4.5°) ≈ 0.078`, a 1500 kg vehicle experiences about **1147 N** of additional resisting force just from gravity along the slope. That load persists throughout the climb and is a meaningful portion of total available traction and motor output.
 
-Notice rolling resistance and grade force lean on the same angle in opposite ways — rolling resistance uses `cos(theta)` because only the part of the car's weight pressing straight down into the road creates friction, and that shrinks a little on a slope. Grade force uses `sin(theta)` because it's the part of gravity running *along* the slope, pulling the car back down it, that matters here. Same hill, two different components of the same force, doing two different jobs.
+This comes directly from splitting gravity into components along and perpendicular to the slope: `sin(θ)` gives the downslope force (grade resistance), while `cos(θ)` affects normal force and thus rolling resistance. Both depend on the same angle but impact the system differently.
+
 
 ---
 
-## 4. Giving a little back
-
-When the driver lifts off the throttle and the car is still moving — the motor switches roles. Instead of pulling energy from the battery, it starts pushing a little back in.
+## 4. Regen
 
 ```
 if throttle < regen_throttle_threshold and speed > regen_speed_threshold:
@@ -118,27 +149,27 @@ if throttle < regen_throttle_threshold and speed > regen_speed_threshold:
     motor_force  -= regen_brake_force
 ```
 
-The current goes negative — flowing into the battery instead of out. The force goes down — the car resists its own momentum instead of adding to it. A small kindness, built into the coasting.
+The current goes negative, flowing into the battery instead of out. A small kindness, built into the coasting.
 
 ---
 
-## 5. Newton doesn't care about any of this being a simulation
+## 5. Newton and His Laws 
 
-Once every force is known, the rest is just Newton's second law, done honestly.
+f = ma
 
 ```
 net_force = motor_force - rolling_resistance - drag_force - grade_force
 acceleration = net_force / mass
 ```
 
-Speed updates, one small step at a time — never negative, because a simulated car, like a real one, doesn't reverse through zero by accident:
+Speed updates:
 
 ```
 speed_ms(t) = max( speed_ms(t-1) + acceleration * dt,  0 )
 speed_kmh   = speed_ms * 3.6
 ```
 
-And distance just keeps counting, quietly, in the background:
+And distance just keeps counting:
 
 ```
 distance_km += speed_kmh * dt / 3600
@@ -146,7 +177,7 @@ distance_km += speed_kmh * dt / 3600
 
 ---
 
-## 6. How hard the motor is actually working
+## 6. RPM and Efficiency
 
 Speed tells you RPM:
 
@@ -155,7 +186,7 @@ wheel_rpm = ( speed_ms / (2*pi*wheel_radius) ) * 60
 rpm = max( wheel_rpm * gear_ratio + noise,  0 )
 ```
 
-But RPM alone doesn't tell you efficiency. Real motors have a sweet spot — a place where they run cleanest — and get worse the further you push them from it, in either direction:
+But RPM alone doesn't tell you efficiency. Real motors have a sweet spot, a place where they run cleanest, and get worse the further you push them from it, in either direction:
 
 ```
 rpm_factor    = max( 0.5, 1 - ((rpm - peak_rpm) / 8000)^2 )
@@ -163,20 +194,20 @@ torque_factor = max( 0.6, 1 - ((motor_torque - 150) / 350)^2 )
 motor_eff     = clip( base_motor_efficiency * rpm_factor * torque_factor,  0.70,  0.94 )
 ```
 
-Not a perfect model of a real motor curve. Close enough to matter.
+Not a perfect model of a real motor curve. 
 
 ---
 
-## 7. What all of this costs the battery
+## 7. Electrical Power
 
-Mechanical power, first — torque doing its work at a given angular speed:
+Mechanical power, first: torque doing its work at a given angular speed:
 
 ```
 angular_velocity = rpm * 2*pi / 60
 p_motor_kW       = motor_torque * angular_velocity / 1000
 ```
 
-Then the honest part — converting that into what the battery actually feels. Driving costs more than the motor alone suggests, because nothing is perfectly efficient. Regen gives back less than it captures, for the same reason.
+Mechanical Energy equivalent to Electrical Energy
 
 ```
 if p_motor_kW > 0:   # driving: losses stack, so more is drawn than the motor alone would suggest
@@ -187,9 +218,9 @@ else:                 # regen: losses stack the other way, so less comes back th
 
 ---
 
-## 8. The battery, paying attention to itself
+## 8. The battery
 
-Current isn't just the load from driving. There's always a baseline hum — electronics that never sleep:
+Current isn't just the load from driving. Electronics in the car never sleep.
 
 ```
 current = quiescent_current + (throttle*0.8 + speed*0.15) + regen_current + noise
@@ -201,13 +232,13 @@ Voltage rises with how full the battery is:
 ocv = 320 + 90 * (soc / 100)
 ```
 
-But what you actually measure at the terminals is a little lower — internal resistance takes its cut:
+Internal Resistance:
 
 ```
 voltage = ocv - current * battery_resistance
 ```
 
-And charge just drains, tick by tick, however much power was spent:
+And charge just drains, irrespective of how much power was spent:
 
 ```
 battery_energy = clip( battery_energy - power*dt/3600,  0,  battery_capacity_kWh )
@@ -216,15 +247,15 @@ soc = (battery_energy / battery_capacity_kWh) * 100
 
 ---
 
-## 9. Heat doesn't ask permission
+## 9. Heat
 
-Current through resistance makes heat. Always has. This is just Ohm's law refusing to be ignored:
+Current through resistance makes heat. V=IR:
 
 ```
 heat_generation = current^2 * battery_resistance
 ```
 
-The pack warms from that heat, and cools back toward the world around it, slowly, the way anything with mass does:
+The pack warms from that heat, and cools backs through environmental contact:
 
 ```
 temp += heat_generation * thermal_mass_factor
@@ -232,13 +263,12 @@ temp -= (temp - ambient_temp) * cooling_rate
 temp  = max(temp, ambient_temp)
 ```
 
-`thermal_mass_factor` decides how quickly a spike in current shows up as a spike in temperature. `cooling_rate` decides how quickly the pack lets that heat go, once the current backs off. Together, they're the difference between a battery that reacts instantly and one that just — absorbs it, calmly, and evens out over time.
+`thermal_mass_factor` decides how quickly a spike in current shows up as a spike in temperature. `cooling_rate` decides how quickly the pack lets that heat go, once the current backs off. 
 
 ---
 
-## 10. One number that isn't fed back into anything
+## 10. Kinetic Energy
 
-Kinetic energy is logged, not used. Just there, quietly, as a way of checking the simulation's honesty against itself:
 
 ```
 kinetic_energy_J = 0.5 * mass * speed_ms^2
@@ -246,10 +276,11 @@ kinetic_energy_J = 0.5 * mass * speed_ms^2
 
 ---
 
-## The whole tick, start to finish
+## Summary
 
 ```
-target speed → gap → throttle
+look up target speed, look up road grade
+     → gap → throttle
      → torque → force at the wheels
      → drag, rolling resistance, grade, pushing back
      → regen, if coasting
@@ -260,4 +291,4 @@ target speed → gap → throttle
      → heat → temperature
 ```
 
-Then it writes the row, and does it again. A thousand times, usually, one second apart — the same handful of equations, over and over, quietly adding up to something that looks, from a distance, like driving.
+Then it writes the row, and does it again. A thousand times.
