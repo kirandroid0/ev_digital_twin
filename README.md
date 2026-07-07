@@ -1,6 +1,6 @@
 # EV Digital Twin Simulator
 
-Simulates an electric vehicle over a drive cycle — PID speed control, vehicle dynamics, battery/thermal model — and streams telemetry into PostgreSQL for live viewing in Grafana.
+Simulates an electric vehicle over a drive cycle (PID speed control, vehicle dynamics, battery/thermal model) and streams telemetry into PostgreSQL for live viewing in Grafana.
 
 PLEASE READ  - [`docs/PHYSICS.md`](docs/PHYSICS.md) !!!!!!!!
 
@@ -30,7 +30,7 @@ Needs a running PostgreSQL instance with the database already created. The `tele
 
 ## Config
 
-Everything's in the `SimConfig` dataclass at the top of `runner.py` — mass, drag coefficient, battery capacity, PID gains, regen thresholds, `samples`/`dt` for run length and speed.
+Everything's in the `SimConfig` dataclass at the top of `runner.py`, `samples`/`dt` for run length and speed.
 
 ## Grafana
 
@@ -46,4 +46,4 @@ ORDER BY time_s;
 
 ## Limitations
 
-Drive cycle steps hard instead of ramping. Battery model has no aging/degradation, no cell-level detail. Built to learn control systems and real-time data pipelines, not a validated vehicle model.
+Drive cycle steps hard instead of ramping. Battery model has no aging/degradation, no cell-level detail. 
